@@ -72,6 +72,8 @@ func parseSubscriptionResponse(body string) []string {
 			continue
 		}
 		if strings.HasPrefix(line, "vless://") ||
+			strings.HasPrefix(line, "vmess://") ||
+			strings.HasPrefix(line, "trojan://") ||
 			strings.HasPrefix(line, "ss://") ||
 			strings.HasPrefix(line, "hysteria2://") {
 			result = append(result, line)

@@ -85,6 +85,34 @@ func makeSSURL(method, password, host string, port int, fragment string) string 
 	return u
 }
 
+func makeVmessURL(fields map[string]any, fragment string) string {
+	data, err := json.Marshal(fields)
+	if err != nil {
+		panic(err)
+	}
+	u := "vmess://" + base64.StdEncoding.EncodeToString(data)
+	if fragment != "" {
+		u += "#" + fragment
+	}
+	return u
+}
+
+func makeTrojanURL(password, host string, port int, fragment string, params map[string]string) string {
+	netloc := fmt.Sprintf("%s@%s", password, host)
+	if port > 0 {
+		netloc += fmt.Sprintf(":%d", port)
+	}
+	q := url.Values{}
+	for k, v := range params {
+		q.Set(k, v)
+	}
+	u := fmt.Sprintf("trojan://%s?%s", netloc, q.Encode())
+	if fragment != "" {
+		u += "#" + fragment
+	}
+	return u
+}
+
 func runMain(t *testing.T, args ...string) error {
 	t.Helper()
 	return run(args)
@@ -750,6 +778,295 @@ func TestDialerProxyOnShadowsocks(t *testing.T) {
 	}
 }
 
+func TestVmessSubscription(t *testing.T) {
+	vmessURL := makeVmessURL(map[string]any{
+		"v":    "2",
+		"add":  "vm.example.com",
+		"port": 443,
+		"id":   "vm-uuid",
+		"aid":  0,
+		"scy":  "auto",
+		"net":  "ws",
+		"type": "none",
+		"tls":  "tls",
+		"sni":  "vm.example.com",
+		"host": "cdn.example.com",
+		"path": "/ws",
+	}, "VM Node")
+
+	srv := newTestServer(map[string]testResponse{
+		"/sub": {body: vmessURL},
+	})
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	err := runMain(t,
+		"--output-dir", tmpDir,
+		"--no-restart",
+		fmt.Sprintf("vm=%s/sub", srv.URL),
+	)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	got := loadConfig(t, tmpDir, "vm")
+	want := map[string]any{
+		"outbounds": []any{
+			map[string]any{
+				"tag":      "vm--VM Node",
+				"protocol": "vmess",
+				"settings": map[string]any{
+					"vnext": []any{
+						map[string]any{
+							"address": "vm.example.com",
+							"port":    float64(443),
+							"users": []any{
+								map[string]any{
+									"id":       "vm-uuid",
+									"alterId":  float64(0),
+									"security": "auto",
+								},
+							},
+						},
+					},
+				},
+				"streamSettings": map[string]any{
+					"network":  "ws",
+					"security": "tls",
+					"tlsSettings": map[string]any{
+						"serverName":    "vm.example.com",
+						"allowInsecure": false,
+						"fingerprint":   "chrome",
+					},
+					"wsSettings": map[string]any{
+						"path": "/ws",
+						"host": "cdn.example.com",
+					},
+				},
+			},
+		},
+	}
+
+	assertDeepEqual(t, got, want)
+}
+
+func TestVmessFlexIntStringValues(t *testing.T) {
+	vmessURL := makeVmessURL(map[string]any{
+		"add":  "flex.example.com",
+		"port": "8443", // string instead of number
+		"id":   "flex-uuid",
+		"aid":  "1", // string instead of number
+		"net":  "tcp",
+		"tls":  "",
+	}, "")
+
+	srv := newTestServer(map[string]testResponse{
+		"/sub": {body: vmessURL},
+	})
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	err := runMain(t,
+		"--output-dir", tmpDir,
+		"--no-restart",
+		fmt.Sprintf("flex=%s/sub", srv.URL),
+	)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	got := loadConfig(t, tmpDir, "flex")
+	outbounds := got["outbounds"].([]any)
+	out := outbounds[0].(map[string]any)
+	vnext := out["settings"].(map[string]any)["vnext"].([]any)[0].(map[string]any)
+
+	if vnext["port"] != float64(8443) {
+		t.Errorf("expected port 8443 from string, got %v", vnext["port"])
+	}
+	users := vnext["users"].([]any)[0].(map[string]any)
+	if users["alterId"] != float64(1) {
+		t.Errorf("expected alterId 1 from string, got %v", users["alterId"])
+	}
+	ss := out["streamSettings"].(map[string]any)
+	if ss["security"] != "none" {
+		t.Errorf("expected security none without tls, got %v", ss["security"])
+	}
+	if _, ok := ss["tlsSettings"]; ok {
+		t.Error("did not expect tlsSettings without tls")
+	}
+}
+
+func TestTrojanSubscription(t *testing.T) {
+	trojanURL := makeTrojanURL("trojan-pass", "tj.example.com", 443, "TJ Node", map[string]string{
+		"security":    "tls",
+		"type":        "grpc",
+		"sni":         "tj.example.com",
+		"serviceName": "grpc-svc",
+		"fp":          "firefox",
+	})
+
+	srv := newTestServer(map[string]testResponse{
+		"/sub": {body: trojanURL},
+	})
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	err := runMain(t,
+		"--output-dir", tmpDir,
+		"--no-restart",
+		fmt.Sprintf("tj=%s/sub", srv.URL),
+	)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	got := loadConfig(t, tmpDir, "tj")
+	want := map[string]any{
+		"outbounds": []any{
+			map[string]any{
+				"tag":      "tj--TJ Node",
+				"protocol": "trojan",
+				"settings": map[string]any{
+					"servers": []any{
+						map[string]any{
+							"address":  "tj.example.com",
+							"port":     float64(443),
+							"password": "trojan-pass",
+						},
+					},
+				},
+				"streamSettings": map[string]any{
+					"network":  "grpc",
+					"security": "tls",
+					"tlsSettings": map[string]any{
+						"serverName":    "tj.example.com",
+						"allowInsecure": false,
+						"fingerprint":   "firefox",
+					},
+					"grpcSettings": map[string]any{
+						"serviceName": "grpc-svc",
+					},
+				},
+			},
+		},
+	}
+
+	assertDeepEqual(t, got, want)
+}
+
+func TestTrojanTcpNoTransportBlock(t *testing.T) {
+	trojanURL := makeTrojanURL("pw", "t2.example.com", 443, "T2", map[string]string{
+		"security": "tls",
+		"type":     "tcp",
+		"sni":      "t2.example.com",
+	})
+
+	srv := newTestServer(map[string]testResponse{
+		"/sub": {body: trojanURL},
+	})
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	err := runMain(t,
+		"--output-dir", tmpDir,
+		"--no-restart",
+		fmt.Sprintf("t2=%s/sub", srv.URL),
+	)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	got := loadConfig(t, tmpDir, "t2")
+	ss := got["outbounds"].([]any)[0].(map[string]any)["streamSettings"].(map[string]any)
+	for _, key := range []string{"wsSettings", "grpcSettings", "xhttpSettings"} {
+		if _, ok := ss[key]; ok {
+			t.Errorf("did not expect %s for tcp transport", key)
+		}
+	}
+	if _, ok := ss["tlsSettings"]; !ok {
+		t.Error("expected tlsSettings for tls security")
+	}
+}
+
+func TestSkipsUnsupportedTransport(t *testing.T) {
+	badVmess := makeVmessURL(map[string]any{
+		"add":  "bad.example.com",
+		"port": 443,
+		"id":   "bad-uuid",
+		"net":  "h2", // removed in modern Xray -> must be skipped
+		"tls":  "tls",
+	}, "Bad")
+	goodTrojan := makeTrojanURL("pw", "good.example.com", 443, "Good", map[string]string{
+		"security": "tls",
+		"type":     "tcp",
+		"sni":      "good.example.com",
+	})
+
+	srv := newTestServer(map[string]testResponse{
+		"/sub": {body: badVmess + "\n" + goodTrojan + "\n"},
+	})
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	err := runMain(t,
+		"--output-dir", tmpDir,
+		"--no-restart",
+		fmt.Sprintf("mix=%s/sub", srv.URL),
+	)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	got := loadConfig(t, tmpDir, "mix")
+	outbounds := got["outbounds"].([]any)
+	if len(outbounds) != 1 {
+		t.Fatalf("expected 1 outbound (bad transport skipped), got %d", len(outbounds))
+	}
+	out := outbounds[0].(map[string]any)
+	if out["protocol"] != "trojan" {
+		t.Errorf("expected the surviving outbound to be trojan, got %v", out["protocol"])
+	}
+}
+
+func TestDialerProxyOnTrojan(t *testing.T) {
+	trojanURL := makeTrojanURL("pw", "td.example.com", 443, "TD", map[string]string{
+		"security": "tls",
+		"type":     "tcp",
+		"sni":      "td.example.com",
+	})
+
+	srv := newTestServer(map[string]testResponse{
+		"/sub": {body: trojanURL},
+	})
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	err := runMain(t,
+		"--output-dir", tmpDir,
+		"--no-restart",
+		"--dialer-proxies=warp",
+		fmt.Sprintf("td=%s/sub", srv.URL),
+	)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	got := loadConfig(t, tmpDir, "td")
+	outbounds := got["outbounds"].([]any)
+	if len(outbounds) != 2 {
+		t.Fatalf("expected 2 outbounds, got %d", len(outbounds))
+	}
+	dialerOut := outbounds[1].(map[string]any)
+	if dialerOut["tag"] != "td--TD--warp" {
+		t.Errorf("expected tag td--TD--warp, got %q", dialerOut["tag"])
+	}
+	ss := dialerOut["streamSettings"].(map[string]any)
+	sockopt := ss["sockopt"].(map[string]any)
+	if sockopt["dialerProxy"] != "warp" {
+		t.Errorf("expected dialerProxy warp, got %q", sockopt["dialerProxy"])
+	}
+}
+
 func TestParseProxyURLErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -762,6 +1079,13 @@ func TestParseProxyURLErrors(t *testing.T) {
 		{"bad ss base64", "ss://not-base64@host:443", "декодирования SS"},
 		{"ss credentials no colon", "ss://" + base64.StdEncoding.EncodeToString([]byte("nocolon")) + "@host:443", "формат SS credentials"},
 		{"vless missing user", "vless://@host:443?type=tcp&security=reality&sni=s&pbk=p", "идентификатор пользователя"},
+		{"trojan missing password", "trojan://@host:443?security=tls", "пароль"},
+		{"trojan unsupported transport", "trojan://pw@host:443?type=quic", "неподдерживаемый транспорт"},
+		{"vmess bad base64", "vmess://!!!not-base64!!!", "декодирования vmess"},
+		{"vmess bad json", "vmess://" + base64.StdEncoding.EncodeToString([]byte("not json")), "парсинга vmess"},
+		{"vmess missing add", "vmess://" + base64.StdEncoding.EncodeToString([]byte(`{"id":"x"}`)), "адрес сервера"},
+		{"vmess missing id", "vmess://" + base64.StdEncoding.EncodeToString([]byte(`{"add":"h"}`)), "идентификатор пользователя"},
+		{"vmess unsupported transport", "vmess://" + base64.StdEncoding.EncodeToString([]byte(`{"add":"h","id":"x","net":"h2"}`)), "неподдерживаемый транспорт"},
 	}
 
 	for _, tt := range tests {

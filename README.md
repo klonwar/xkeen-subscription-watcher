@@ -15,6 +15,19 @@ xkeen-subscription-watcher <tag>=<url>
 
 Если конфиги изменились, выполняется `xkeen -restart`.
 
+### Поддерживаемые протоколы
+
+- `vless` (reality / tls / none; транспорты `tcp`, `raw`, `ws`, `grpc`, `xhttp`)
+- `vmess` (формат `vmess://base64(JSON)`)
+- `trojan`
+- `shadowsocks` (`ss`)
+- `hysteria2`
+
+Для `vmess` и `trojan` поддерживаются транспорты `tcp`, `raw`, `ws`, `grpc`.
+Узлы с транспортами, которые удалены из актуального Xray (`h2`/`http`, `quic`,
+`kcp` и т.п.), пропускаются с предупреждением в логе — чтобы один такой узел не
+ломал весь конфиг.
+
 ### Флаги
 
 - `--output-dir <path>` — каталог для конфигов (по умолчанию `/opt/etc/xray/configs`)
