@@ -1,7 +1,7 @@
 # xkeen-subscription-watcher
 
-[![Test](https://github.com/tkukushkin/xkeen-subscription-watcher/actions/workflows/test.yml/badge.svg)](https://github.com/tkukushkin/xkeen-subscription-watcher/actions/workflows/test.yml)
-[![codecov](https://codecov.io/gh/tkukushkin/xkeen-subscription-watcher/graph/badge.svg)](https://codecov.io/gh/tkukushkin/xkeen-subscription-watcher)
+[![Test](https://github.com/klonwar/xkeen-subscription-watcher/actions/workflows/test.yml/badge.svg)](https://github.com/klonwar/xkeen-subscription-watcher/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/klonwar/xkeen-subscription-watcher/graph/badge.svg)](https://codecov.io/gh/klonwar/xkeen-subscription-watcher)
 
 ## Использование
 
@@ -69,10 +69,10 @@ xkeen-subscription-watcher \
 ## Установка
 
 ```shell
-curl -sSf https://raw.githubusercontent.com/tkukushkin/xkeen-subscription-watcher/master/install.sh | sh
+curl -sSf https://raw.githubusercontent.com/klonwar/xkeen-subscription-watcher/master/install.sh | sh
 ```
 
-Или вручную — скачать бинарник для своей архитектуры из [Releases](https://github.com/tkukushkin/xkeen-subscription-watcher/releases/latest):
+Или вручную — скачать бинарник для своей архитектуры из [Releases](https://github.com/klonwar/xkeen-subscription-watcher/releases/latest):
 
 ```shell
 curl -sSLo /opt/sbin/xkeen-subscription-watcher <url-бинарника>

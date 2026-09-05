@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="tkukushkin/xkeen-subscription-watcher"
+REPO="klonwar/xkeen-subscription-watcher"
 INSTALL_PATH="/opt/sbin/xkeen-subscription-watcher"
 
 detect_arch() {
