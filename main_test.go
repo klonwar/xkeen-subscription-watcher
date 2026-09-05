@@ -1131,3 +1131,266 @@ func TestErrorWhenOutputDirIsNotDirectory(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+func TestFilterRulesMatch(t *testing.T) {
+	rules := filterRules{
+		includeNames:      []string{"germany"},
+		includeNameGlobs:  []string{"fi-*"},
+		includeProtocols:  []string{"vless", "vmess"},
+		includeTransports: []string{"ws", "grpc"},
+		excludeNameGlobs:  []string{"*test*"},
+	}
+
+	tests := []struct {
+		name      string
+		nodeName  string
+		protocol  string
+		transport string
+		want      bool
+	}{
+		{"substring match", "Germany-01", "vless", "ws", true},
+		{"glob match", "FI-02", "vmess", "grpc", true},
+		{"different attribute is AND", "Germany-01", "trojan", "ws", false},
+		{"exclude wins", "Germany-test", "vless", "ws", false},
+		{"transport required", "Germany-01", "vless", "tcp", false},
+		{"name required", "France-01", "vless", "ws", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := rules.matches(tt.nodeName, tt.protocol, tt.transport); got != tt.want {
+				t.Errorf("matches(%q, %q, %q) = %v, want %v", tt.nodeName, tt.protocol, tt.transport, got, tt.want)
+			}
+		})
+	}
+
+	excludeRules := filterRules{
+		excludeNames:      []string{"blocked"},
+		excludeProtocols:  []string{"trojan"},
+		excludeTransports: []string{"quic"},
+	}
+	for _, tt := range []struct {
+		name      string
+		nodeName  string
+		protocol  string
+		transport string
+		want      bool
+	}{
+		{"exclude substring", "Blocked Node", "vless", "tcp", false},
+		{"exclude protocol", "Good Node", "trojan", "tcp", false},
+		{"exclude transport", "Good Node", "vless", "quic", false},
+		{"not excluded", "Good Node", "vless", "tcp", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := excludeRules.matches(tt.nodeName, tt.protocol, tt.transport); got != tt.want {
+				t.Errorf("matches(%q, %q, %q) = %v, want %v", tt.nodeName, tt.protocol, tt.transport, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFilterConfigScopesRulesByTag(t *testing.T) {
+	filters, err := parseFilterConfig(filterOptions{
+		includeNames:      []string{"Germany", "home=Netherlands"},
+		includeNameGlobs:  []string{"home=DE-*"},
+		includeProtocols:  []string{"vless", "work=trojan"},
+		includeTransports: []string{"home=ws"},
+		limits:            []string{"3", "home=5"},
+	}, map[string]bool{"home": true, "work": true})
+	if err != nil {
+		t.Fatalf("parseFilterConfig failed: %v", err)
+	}
+
+	home := filters.rulesFor("home")
+	if !reflect.DeepEqual(home.includeNames, []string{"germany", "netherlands"}) {
+		t.Errorf("home include names = %#v", home.includeNames)
+	}
+	if !reflect.DeepEqual(home.includeNameGlobs, []string{"de-*"}) {
+		t.Errorf("home include name globs = %#v", home.includeNameGlobs)
+	}
+	if !reflect.DeepEqual(home.includeProtocols, []string{"vless"}) {
+		t.Errorf("home include protocols = %#v", home.includeProtocols)
+	}
+	if !reflect.DeepEqual(home.includeTransports, []string{"ws"}) {
+		t.Errorf("home include transports = %#v", home.includeTransports)
+	}
+	if home.limit == nil || *home.limit != 5 {
+		t.Errorf("home limit = %v, want 5", home.limit)
+	}
+
+	work := filters.rulesFor("work")
+	if !reflect.DeepEqual(work.includeProtocols, []string{"vless", "trojan"}) {
+		t.Errorf("work include protocols = %#v", work.includeProtocols)
+	}
+	if work.limit == nil || *work.limit != 3 {
+		t.Errorf("work limit = %v, want global 3", work.limit)
+	}
+}
+
+func TestPerTagFilteringAndLimits(t *testing.T) {
+	homeGermany := makeVlessURL("home-1", "a.example.com", 443, "Germany-01", map[string]string{
+		"type": "ws",
+	})
+	homeGermanyTest := makeVlessURL("home-2", "b.example.com", 443, "Germany-test", map[string]string{
+		"type": "ws",
+	})
+	homeFrance := makeVlessURL("home-3", "c.example.com", 443, "France-01", map[string]string{
+		"type": "ws",
+	})
+	workVless := makeVlessURL("work-1", "d.example.com", 443, "FI-ws", map[string]string{
+		"type": "ws",
+	})
+	workTrojan := makeTrojanURL("work-2", "e.example.com", 443, "FI-grpc", map[string]string{
+		"type":        "grpc",
+		"security":    "tls",
+		"serviceName": "work",
+	})
+
+	srv := newTestServer(map[string]testResponse{
+		"/home": {body: homeGermany + "\n" + homeGermanyTest + "\n" + homeFrance + "\n"},
+		"/work": {body: workVless + "\n" + workTrojan + "\n"},
+	})
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	err := runMain(t,
+		"--output-dir", tmpDir,
+		"--no-restart",
+		fmt.Sprintf("home=%s/home", srv.URL),
+		fmt.Sprintf("work=%s/work", srv.URL),
+		"--include-name", "home=Germany",
+		"--exclude-name-glob", "home=*test*",
+		"--limit", "home=1",
+		"--include-protocol", "work=trojan",
+		"--include-transport", "work=grpc",
+	)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	homeOutbounds := loadConfig(t, tmpDir, "home")["outbounds"].([]any)
+	if len(homeOutbounds) != 1 {
+		t.Fatalf("expected 1 home outbound, got %d", len(homeOutbounds))
+	}
+	if homeOutbounds[0].(map[string]any)["tag"] != "home--Germany-01" {
+		t.Errorf("unexpected home tag: %v", homeOutbounds[0].(map[string]any)["tag"])
+	}
+
+	workOutbounds := loadConfig(t, tmpDir, "work")["outbounds"].([]any)
+	if len(workOutbounds) != 1 {
+		t.Fatalf("expected 1 work outbound, got %d", len(workOutbounds))
+	}
+	workOutbound := workOutbounds[0].(map[string]any)
+	if workOutbound["tag"] != "work--FI-grpc" {
+		t.Errorf("unexpected work tag: %v", workOutbound["tag"])
+	}
+	if workOutbound["protocol"] != "trojan" {
+		t.Errorf("unexpected work protocol: %v", workOutbound["protocol"])
+	}
+}
+
+func TestEmptyFilterResultWritesEmptyOutbounds(t *testing.T) {
+	ssURL := makeSSURL("aes-256-gcm", "secret", "ss.example.com", 8388, "SS")
+	srv := newTestServer(map[string]testResponse{
+		"/sub": {body: ssURL},
+	})
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	err := runMain(t,
+		"--output-dir", tmpDir,
+		"--no-restart",
+		"--include-protocol", "vless",
+		fmt.Sprintf("empty=%s/sub", srv.URL),
+	)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	outbounds, ok := loadConfig(t, tmpDir, "empty")["outbounds"].([]any)
+	if !ok {
+		t.Fatalf("outbounds is not an array")
+	}
+	if len(outbounds) != 0 {
+		t.Errorf("expected empty outbounds, got %d", len(outbounds))
+	}
+}
+
+func TestZeroLimitWritesEmptyOutbounds(t *testing.T) {
+	ssURL := makeSSURL("aes-256-gcm", "secret", "ss.example.com", 8388, "SS")
+	srv := newTestServer(map[string]testResponse{
+		"/sub": {body: ssURL},
+	})
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	err := runMain(t,
+		"--output-dir", tmpDir,
+		"--no-restart",
+		"--limit", "0",
+		fmt.Sprintf("zero=%s/sub", srv.URL),
+	)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	outbounds, ok := loadConfig(t, tmpDir, "zero")["outbounds"].([]any)
+	if !ok || len(outbounds) != 0 {
+		t.Fatalf("expected empty outbounds for zero limit, got %#v", outbounds)
+	}
+}
+
+func TestFilterValidationErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "unknown tag",
+			args: []string{"--include-name", "missing=Germany"},
+			want: "неизвестный tag",
+		},
+		{
+			name: "invalid glob",
+			args: []string{"--include-name-glob", "[broken"},
+			want: "некорректный glob",
+		},
+		{
+			name: "unsupported protocol",
+			args: []string{"--include-protocol", "wireguard"},
+			want: "неподдерживаемый протокол",
+		},
+		{
+			name: "negative limit",
+			args: []string{"--limit", "-1"},
+			want: "не может быть отрицательным",
+		},
+		{
+			name: "duplicate global limit",
+			args: []string{"--limit", "1", "--limit", "2"},
+			want: "указан несколько раз",
+		},
+		{
+			name: "duplicate tag limit",
+			args: []string{"--limit", "demo=1", "--limit", "demo=2"},
+			want: "указан несколько раз",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			args := []string{"--output-dir", tmpDir, "--no-restart"}
+			args = append(args, tt.args...)
+			args = append(args, "demo=http://example.com/sub")
+			err := run(args)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error %q should contain %q", err.Error(), tt.want)
+			}
+		})
+	}
+}

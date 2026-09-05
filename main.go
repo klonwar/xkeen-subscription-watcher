@@ -42,6 +42,7 @@ func newRootCmd() *cobra.Command {
 		singleProxy        bool
 		realityFingerprint string
 		dialerProxies      []string
+		filterOptions      filterOptions
 	)
 
 	cmd := &cobra.Command{
@@ -49,7 +50,7 @@ func newRootCmd() *cobra.Command {
 		Short: "Обработка подписок и генерация конфигураций для Xray",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := buildConfig(args, outputDir, !noRestart, singleProxy, realityFingerprint, dialerProxies)
+			cfg, err := buildConfig(args, outputDir, !noRestart, singleProxy, realityFingerprint, dialerProxies, filterOptions)
 			if err != nil {
 				return err
 			}
@@ -67,6 +68,24 @@ func newRootCmd() *cobra.Command {
 		"Переопределить fingerprint для Reality подключений.")
 	cmd.Flags().StringSliceVar(&dialerProxies, "dialer-proxies", nil,
 		"Dialer proxies через запятую.")
+	cmd.Flags().StringArrayVar(&filterOptions.includeNames, "include-name", nil,
+		"Оставлять узлы, имя которых содержит указанную подстроку (можно повторять; tag=value для конкретного tag).")
+	cmd.Flags().StringArrayVar(&filterOptions.includeNameGlobs, "include-name-glob", nil,
+		"Оставлять узлы по glob-маске имени (можно повторять; tag=value для конкретного tag).")
+	cmd.Flags().StringArrayVar(&filterOptions.excludeNames, "exclude-name", nil,
+		"Исключать узлы, имя которых содержит указанную подстроку (можно повторять; tag=value для конкретного tag).")
+	cmd.Flags().StringArrayVar(&filterOptions.excludeNameGlobs, "exclude-name-glob", nil,
+		"Исключать узлы по glob-маске имени (можно повторять; tag=value для конкретного tag).")
+	cmd.Flags().StringArrayVar(&filterOptions.includeProtocols, "include-protocol", nil,
+		"Оставлять узлы с указанным протоколом (можно повторять; tag=value для конкретного tag).")
+	cmd.Flags().StringArrayVar(&filterOptions.excludeProtocols, "exclude-protocol", nil,
+		"Исключать узлы с указанным протоколом (можно повторять; tag=value для конкретного tag).")
+	cmd.Flags().StringArrayVar(&filterOptions.includeTransports, "include-transport", nil,
+		"Оставлять узлы с указанным транспортом (можно повторять; tag=value для конкретного tag).")
+	cmd.Flags().StringArrayVar(&filterOptions.excludeTransports, "exclude-transport", nil,
+		"Исключать узлы с указанным транспортом (можно повторять; tag=value для конкретного tag).")
+	cmd.Flags().StringArrayVar(&filterOptions.limits, "limit", nil,
+		"Ограничить число узлов (неотрицательное число; tag=value для конкретного tag).")
 
 	cmd.AddCommand(newVersionCmd())
 
@@ -101,6 +120,7 @@ type config struct {
 	dialerProxies      []string
 	singleProxy        bool
 	realityFingerprint string
+	filters            filterConfig
 }
 
 type subscription struct {
@@ -114,6 +134,7 @@ func buildConfig(
 	restartXkeen, singleProxy bool,
 	realityFingerprint string,
 	dialerProxies []string,
+	filterOptions filterOptions,
 ) (config, error) {
 	if len(positionalArgs) == 0 {
 		return config{}, fmt.Errorf("не указаны подписки. Использование: xkeen-subscription-watcher [флаги] <tag>=<url> ...")
@@ -141,6 +162,11 @@ func buildConfig(
 		return config{}, fmt.Errorf("указанный путь для --output-dir %s не является директорией", outputDir)
 	}
 
+	filters, err := parseFilterConfig(filterOptions, tags)
+	if err != nil {
+		return config{}, err
+	}
+
 	return config{
 		subscriptions:      subs,
 		outputDir:          outputDir,
@@ -148,6 +174,7 @@ func buildConfig(
 		dialerProxies:      dialerProxies,
 		singleProxy:        singleProxy,
 		realityFingerprint: realityFingerprint,
+		filters:            filters,
 	}, nil
 }
 
@@ -220,16 +247,27 @@ func getOutbounds(sub subscription, cfg config) ([]any, error) {
 		return nil, err
 	}
 	sort.Strings(proxyURLs)
+	rules := cfg.filters.rulesFor(sub.tag)
 
 	tagCounters := make(map[string]int)
-	var result []any
+	result := make([]any, 0)
+	matched := 0
 
 	for _, proxyURL := range proxyURLs {
+		if rules.limit != nil && matched >= *rules.limit {
+			break
+		}
+
 		p, err := parseProxyURL(proxyURL)
 		if err != nil {
 			log.Printf("Не удалось распарсить URL прокси %q из подписки %q, пропускаем: %v", proxyURL, sub.tag, err)
 			continue
 		}
+		protocol, transport := proxyProtocolTransport(p)
+		if !rules.matches(getProxyName(proxyURL), protocol, transport) {
+			continue
+		}
+		matched++
 
 		tag := sub.tag
 		if !cfg.singleProxy {

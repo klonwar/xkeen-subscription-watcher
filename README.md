@@ -35,6 +35,36 @@ xkeen-subscription-watcher <tag>=<url>
 - `--single-proxy` — брать только первый прокси из подписки
 - `--reality-fingerprint <fp>` — переопределить fingerprint для Reality
 - `--dialer-proxies=<proxy1>,<proxy2>` — dialer proxies через запятую
+- `--include-name <pattern>` — оставлять узлы с указанной подстрокой в имени
+- `--include-name-glob <pattern>` — оставлять узлы по glob-маске имени
+- `--exclude-name <pattern>` — исключать узлы с указанной подстрокой в имени
+- `--exclude-name-glob <pattern>` — исключать узлы по glob-маске имени
+- `--include-protocol <protocol>` / `--exclude-protocol <protocol>` — фильтр по протоколу
+- `--include-transport <transport>` / `--exclude-transport <transport>` — фильтр по транспорту
+- `--limit <N>` — ограничить число оставшихся узлов
+
+Новые флаги можно повторять. Значение без `tag=` применяется ко всем подпискам,
+а форма `tag=value` — только к указанному тегу. Например, чтобы настроить разные
+ограничения в одном запуске:
+
+```shell
+xkeen-subscription-watcher \
+  home=https://example.com/home \
+  work=https://example.com/work \
+  --include-name home=Germany \
+  --include-name-glob work=FI-* \
+  --include-protocol home=vless \
+  --include-transport work=grpc \
+  --exclude-name-glob home='*test*' \
+  --limit home=3 \
+  --limit work=5
+```
+
+`--include-name` и `--exclude-name` ищут подстроку без учета регистра.
+Для glob-масок используйте отдельные флаги и заключайте значения с `*`, `?` или
+скобками в кавычки, чтобы shell не раскрыл их до запуска программы. Доступны
+протоколы `vless`, `vmess`, `trojan`, `ss`, `hysteria2` и транспорты `tcp`,
+`raw`, `ws`, `grpc`, `xhttp`, `hysteria`.
 
 ## Установка
 
